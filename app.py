@@ -756,7 +756,7 @@ else:
     fig_prob.update_layout(
         title=dict(text="누적 도달 확률 곡선 (실선: 2σ 가정 / 점선: 1.2σ 가정)", font=dict(size=14)),
         xaxis=dict(title="연도", gridcolor="#ECECEC", zeroline=False),
-        yaxis=dict(title="확률 (%)", range=[0, 100], gridcolor="#ECECEC", zeroline=False),
+        yaxis=dict(title="확률 (%)", rangemode="tozero", gridcolor="#ECECEC", zeroline=False),
         hovermode="x unified",
         height=380,
         plot_bgcolor="white",
