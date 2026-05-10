@@ -12,7 +12,7 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────────
-# 사이드바 — 탭 입력 (기본 설정 / 은퇴 시나리오)
+# 사이드바 — 탭 입력 (자산 시나리오 / 은퇴 시나리오)
 # ─────────────────────────────────────────────
 # 사이드바 입력창 간격 축소 CSS
 st.markdown(
@@ -28,9 +28,9 @@ st.markdown(
 )
 
 with st.sidebar:
-    tab_basic, tab_retire = st.tabs(["💼 기본 설정", "🏖️ 은퇴 시나리오"])
+    tab_basic, tab_retire = st.tabs(["💼 자산 시나리오", "🏖️ 은퇴 시나리오"])
 
-    # ── 탭 1: 기본 설정
+    # ── 탭 1: 자산 시나리오
     with tab_basic:
         st.markdown("**자산 · 수입 · 소비**")
         initial_assets = st.number_input(
@@ -73,7 +73,7 @@ with st.sidebar:
 
         st.markdown("**기간 · 물가 · 목표**")
         sim_years = st.number_input(
-            "시뮬레이션 기간 (년)", min_value=1, max_value=100, value=30, step=1
+            "시뮬레이션 기간 (년)", min_value=1, max_value=100, value=20, step=1
         )
         col_inf, col_ig = st.columns(2)
         with col_inf:
@@ -123,24 +123,32 @@ with st.sidebar:
         if use_retirement:
             st.markdown("**은퇴 조건**")
 
-            # ── session_state로 retire_year 보존 ──────────────
-            # sim_years가 바뀌어도 사용자가 입력한 값을 유지.
-            # 단, sim_years보다 커지면 유효 범위로 클램핑.
+            # ── session_state로 retire_year / post_retire_years 보존 ──
+            # 자산 시나리오 탭의 sim_years 와 독립적으로 관리.
             if "retire_year" not in st.session_state:
-                st.session_state["retire_year"] = min(10, int(sim_years))
-            else:
-                st.session_state["retire_year"] = min(
-                    st.session_state["retire_year"], int(sim_years)
-                )
+                st.session_state["retire_year"] = 15
+            if "post_retire_years" not in st.session_state:
+                st.session_state["post_retire_years"] = 20
 
-            retire_year = st.number_input(
-                "은퇴 시점 (N년차)",
-                min_value=1,
-                max_value=int(sim_years),
-                step=1,
-                key="retire_year",  # value= 대신 session_state 키 사용
-                help="이 연도부터 아래 항목이 적용됩니다.",
-            )
+            col_ry, col_py = st.columns(2)
+            with col_ry:
+                retire_year = st.number_input(
+                    "은퇴 시점 (N년차)",
+                    min_value=1,
+                    max_value=80,
+                    step=1,
+                    key="retire_year",
+                    help="자산 시나리오 그래프의 중간(평균) 곡선을 보고 결정하세요.",
+                )
+            with col_py:
+                post_retire_years = st.number_input(
+                    "은퇴 이후 기간 (년)",
+                    min_value=1,
+                    max_value=80,
+                    step=1,
+                    key="post_retire_years",
+                    help="은퇴 이후 자산 흐름을 추적할 기간",
+                )
             retire_income = st.number_input(
                 "은퇴 후 월 수입 (만원)",
                 min_value=0,
@@ -183,26 +191,19 @@ with st.sidebar:
                     format="%.1f",
                     key="ret_max_return",
                 )
+
+            # 은퇴 후 수익률 min > max 자동 교체
+            min_retire_return = min(min_retire_return_input, max_retire_return_input)
+            max_retire_return = max(min_retire_return_input, max_retire_return_input)
+            if min_retire_return_input > max_retire_return_input:
+                st.warning("⚠️ 은퇴 후 수익률: 최솟값 > 최댓값 — 자동 교체합니다.")
+            mid_retire_return = (min_retire_return + max_retire_return) / 2
         else:
             st.markdown(
                 "<div style='color:#888; font-size:0.88rem; padding-top:8px'>"
                 "토글을 켜면 은퇴 후 자산 변화를<br>그래프에서 비교할 수 있어요.</div>",
                 unsafe_allow_html=True,
             )
-            retire_year = min(
-                20, int(sim_years)
-            )  # 미사용 기본값 (use_retirement=False 시)
-            retire_income = 0
-            retire_tax_pct = 22.0
-            min_retire_return_input = 3.5
-            max_retire_return_input = 7.5
-
-        # 은퇴 후 수익률 min > max 자동 교체
-        min_retire_return = min(min_retire_return_input, max_retire_return_input)
-        max_retire_return = max(min_retire_return_input, max_retire_return_input)
-        if use_retirement and min_retire_return_input > max_retire_return_input:
-            st.warning("⚠️ 은퇴 후 수익률: 최솟값 > 최댓값 — 자동 교체합니다.")
-        mid_retire_return = (min_retire_return + max_retire_return) / 2
 
 
 # ─────────────────────────────────────────────
@@ -243,52 +244,52 @@ def simulate(
     return assets, details
 
 
-def simulate_retirement(
-    initial,
-    m_income_pre,
+def simulate_post_retirement(
+    start_assets,
     m_exp_init,
-    return_pct_pre,
-    return_pct_post,
+    return_pct,
     inflation_pct,
-    income_growth_pct,
-    years,
     retire_yr,
+    post_years,
     m_income_post,
     tax_pct,
 ):
-    """은퇴 시나리오 포함 시뮬레이션.
+    """은퇴 단계 시뮬레이션 (은퇴 시점 이후만 계산).
 
-    은퇴 전: return_pct_pre 적용 (공격적 투자), 연봉 상승률 적용
-    은퇴 후: return_pct_post 적용 (안정적 투자), 연봉 상승 없음
+    자산 시나리오의 중간 곡선이 retire_yr 시점에 도달한 자산값(start_assets)을
+    초기값으로 받아, retire_yr 이후 post_years 동안의 자산 흐름을 계산.
+    return_pct 별로 호출 → 한 점에서 min/mid/max 라인이 분기.
 
-    은퇴 후 (월소비 > 은퇴 후 수입) 시:
-      - 부족분(deficit) 을 투자 자산에서 인출
-      - 세금 gross-up: 순수령 = deficit → 매도액 = deficit / (1 − tax_rate)
-      - 자산에서 실제 차감 = 매도액 (세금 포함)
-    은퇴 후 (월소비 ≤ 은퇴 후 수입) 시:
+    물가상승률은 0년차부터 누적되는 절대 연도 기준으로 적용.
+    (월 소비 = m_exp_init × (1+inf)^(retire_yr+k))
+
+    은퇴 후 (월소비 > 은퇴 후 월 수입) 시:
+      - 부족분을 투자 자산에서 인출
+      - 세금 gross-up: 매도액 = 부족분 / (1 − tax_rate)
+    은퇴 후 (월소비 ≤ 은퇴 후 월 수입) 시:
       - 잉여분 재투자, 추가 세금 없음
+
+    반환:
+      assets — 길이 post_years+1, assets[0] = start_assets
+      details — 길이 post_years
     """
-    assets = [float(initial)]
+    assets = [float(start_assets)]
     details = []
-    r_pre = return_pct_pre / 100
-    r_post = return_pct_post / 100
+    r = return_pct / 100
     inf = inflation_pct / 100
-    ig = income_growth_pct / 100
     tax = tax_pct / 100
 
-    for yr in range(1, years + 1):
-        cur_monthly_exp = m_exp_init * ((1 + inf) ** yr)
+    for k in range(1, post_years + 1):
+        absolute_yr = retire_yr + k
+        cur_monthly_exp = m_exp_init * ((1 + inf) ** absolute_yr)
         annual_exp = cur_monthly_exp * 12
-        is_retired = yr > retire_yr
-        r = r_post if is_retired else r_pre
-        cur_income = m_income_post if is_retired else m_income_pre * ((1 + ig) ** yr)
+        cur_income = float(m_income_post)
 
         monthly_deficit = cur_monthly_exp - cur_income  # 양수 → 인출 필요
 
-        if is_retired and monthly_deficit > 0 and tax < 1:
-            # 세금 gross-up: 순수령 deficit 을 위해 필요한 매도액
+        if monthly_deficit > 0 and tax < 1:
             gross_monthly = monthly_deficit / (1 - tax)
-            annual_savings = -gross_monthly * 12  # 자산 차감
+            annual_savings = -gross_monthly * 12
             tax_paid_annual = (gross_monthly - monthly_deficit) * 12
         else:
             annual_savings = (cur_income - cur_monthly_exp) * 12
@@ -304,7 +305,7 @@ def simulate_retirement(
                 "annual_savings": annual_savings,
                 "annual_return": annual_return,
                 "cur_income": cur_income,
-                "is_retired": is_retired,
+                "is_retired": True,
                 "gross_withdraw": gross_monthly * 12,
                 "tax_paid": tax_paid_annual,
             }
@@ -334,6 +335,14 @@ def find_target_year(assets, targets):
     return None
 
 
+def find_threshold_year(ret_assets, threshold, retire_yr):
+    """은퇴 자산이 threshold 이하로 처음 떨어지는 절대 연도 반환 (없으면 None)."""
+    for k, a in enumerate(ret_assets):
+        if a <= threshold:
+            return retire_yr + k
+    return None
+
+
 def fmt_man(val):
     if not np.isfinite(val):
         return "∞"
@@ -356,88 +365,60 @@ if max_return == 0:
 # ─────────────────────────────────────────────
 # 계산
 # ─────────────────────────────────────────────
-years_range = list(range(int(sim_years) + 1))
 mid_return = (min_return + max_return) / 2
 
-# 기본 시나리오
+# 시뮬레이션 구간 결정
+# - 은퇴 OFF: 자산 시나리오 sim_years 만큼 표시
+# - 은퇴 ON: 기본 시나리오는 retire_year 까지만 (관찰용),
+#           은퇴 단계가 retire_year ~ retire_year+post_retire_years 를 이어받음
+if use_retirement:
+    base_horizon = int(retire_year)
+    total_horizon = int(retire_year) + int(post_retire_years)
+else:
+    base_horizon = int(sim_years)
+    total_horizon = int(sim_years)
+
+years_range = list(range(total_horizon + 1))
+
+# 기본(자산) 시나리오 — 0 ~ base_horizon
 assets_min, details_min = simulate(
-    initial_assets,
-    monthly_income,
-    monthly_expenses,
-    min_return,
-    inflation_rate,
-    income_growth,
-    int(sim_years),
+    initial_assets, monthly_income, monthly_expenses,
+    min_return, inflation_rate, income_growth, base_horizon,
 )
 assets_max, details_max = simulate(
-    initial_assets,
-    monthly_income,
-    monthly_expenses,
-    max_return,
-    inflation_rate,
-    income_growth,
-    int(sim_years),
+    initial_assets, monthly_income, monthly_expenses,
+    max_return, inflation_rate, income_growth, base_horizon,
 )
 assets_mid, details_mid = simulate(
-    initial_assets,
-    monthly_income,
-    monthly_expenses,
-    mid_return,
-    inflation_rate,
-    income_growth,
-    int(sim_years),
+    initial_assets, monthly_income, monthly_expenses,
+    mid_return, inflation_rate, income_growth, base_horizon,
 )
 
-# 목표 자산 (SWR 기준)
-targets = calc_target_assets(monthly_expenses, inflation_rate, swr, int(sim_years))
+# 목표 자산 (SWR 기준) — 전체 구간 (은퇴 ON에서는 미사용이지만 길이 맞춤)
+targets = calc_target_assets(monthly_expenses, inflation_rate, swr, total_horizon)
 target_yr_min = find_target_year(assets_min, targets)
 target_yr_mid = find_target_year(assets_mid, targets)
 target_yr_max = find_target_year(assets_max, targets)
 
-# 은퇴 시나리오
+# 은퇴 단계 — 자산 시나리오의 mid 곡선이 retire_year에 도달한 자산값을 한 점으로 잡고
+# 거기서 은퇴 min/mid/max 수익률로 분기
 if use_retirement:
-    ret_assets_min, ret_details_min = simulate_retirement(
-        initial_assets,
-        monthly_income,
-        monthly_expenses,
-        min_return,
-        min_retire_return,  # 은퇴 전/후 수익률
-        inflation_rate,
-        income_growth,
-        int(sim_years),
-        int(retire_year),
-        retire_income,
-        retire_tax_pct,
+    retire_start_asset = assets_mid[int(retire_year)]
+    ret_assets_min, ret_details_min = simulate_post_retirement(
+        retire_start_asset, monthly_expenses, min_retire_return,
+        inflation_rate, int(retire_year), int(post_retire_years),
+        retire_income, retire_tax_pct,
     )
-    ret_assets_max, ret_details_max = simulate_retirement(
-        initial_assets,
-        monthly_income,
-        monthly_expenses,
-        max_return,
-        max_retire_return,
-        inflation_rate,
-        income_growth,
-        int(sim_years),
-        int(retire_year),
-        retire_income,
-        retire_tax_pct,
+    ret_assets_mid, ret_details_mid = simulate_post_retirement(
+        retire_start_asset, monthly_expenses, mid_retire_return,
+        inflation_rate, int(retire_year), int(post_retire_years),
+        retire_income, retire_tax_pct,
     )
-    ret_assets_mid, ret_details_mid = simulate_retirement(
-        initial_assets,
-        monthly_income,
-        monthly_expenses,
-        mid_return,
-        mid_retire_return,
-        inflation_rate,
-        income_growth,
-        int(sim_years),
-        int(retire_year),
-        retire_income,
-        retire_tax_pct,
+    ret_assets_max, ret_details_max = simulate_post_retirement(
+        retire_start_asset, monthly_expenses, max_retire_return,
+        inflation_rate, int(retire_year), int(post_retire_years),
+        retire_income, retire_tax_pct,
     )
-    ret_target_yr_min = find_target_year(ret_assets_min, targets)
-    ret_target_yr_mid = find_target_year(ret_assets_mid, targets)
-    ret_target_yr_max = find_target_year(ret_assets_max, targets)
 
 
 # ─────────────────────────────────────────────
@@ -447,24 +428,12 @@ def to_eok(lst):
     return [v / 10_000 for v in lst]
 
 
-tick_interval = 1 if int(sim_years) <= 20 else 2
-dot_years = [y for y in years_range if y % tick_interval == 0]
-dot_assets_mid = [to_eok(assets_mid)[y] for y in dot_years]
-
-# ── 기본 선 범위: 은퇴 ON → retire_year 시점에서 자르기
-if use_retirement:
-    cut = int(retire_year) + 1  # retire_year 포함, 이후는 은퇴 선이 이어받음
-    base_x = years_range[:cut]
-    b_min = assets_min[:cut]
-    b_max = assets_max[:cut]
-    b_mid = assets_mid[:cut]
-    b_dot_yr = [y for y in dot_years if y <= int(retire_year)]
-    b_dot_mid = [to_eok(assets_mid)[y] for y in b_dot_yr]
-else:
-    base_x = years_range
-    b_min, b_max, b_mid = assets_min, assets_max, assets_mid
-    b_dot_yr = dot_years
-    b_dot_mid = dot_assets_mid
+tick_interval = 1 if total_horizon <= 20 else 2
+# 기본 시나리오 구간 (0 ~ base_horizon) — 은퇴 ON일 때는 retire_year까지만 그려짐
+base_x = list(range(base_horizon + 1))
+b_min, b_max, b_mid = assets_min, assets_max, assets_mid
+b_dot_yr = [y for y in base_x if y % tick_interval == 0]
+b_dot_mid = [to_eok(assets_mid)[y] for y in b_dot_yr]
 
 fig = go.Figure()
 
@@ -493,6 +462,7 @@ fig.add_trace(
         showlegend=True,
         hoverinfo="skip",
         name=f"수익률 범위 ({min_return}%~{max_return}%)",
+        legendrank=2,
     )
 )
 
@@ -504,6 +474,7 @@ fig.add_trace(
         line=dict(color="#6495ED", width=1.5, dash="dot"),
         name=f"최소 {min_return}%",
         hovertemplate="연도: %{x}년<br>자산: %{y:.2f}억원<extra></extra>",
+        showlegend=False,
     )
 )
 fig.add_trace(
@@ -514,6 +485,7 @@ fig.add_trace(
         line=dict(color="#6495ED", width=1.5, dash="dot"),
         name=f"최대 {max_return}%",
         hovertemplate="연도: %{x}년<br>자산: %{y:.2f}억원<extra></extra>",
+        showlegend=False,
     )
 )
 fig.add_trace(
@@ -524,6 +496,7 @@ fig.add_trace(
         line=dict(color="#1E4BCC", width=2.5),
         name=f"중간 {mid_return:.1f}%",
         hovertemplate="연도: %{x}년<br>자산: %{y:.2f}억원<extra></extra>",
+        legendrank=1,
     )
 )
 fig.add_trace(
@@ -548,16 +521,18 @@ if not use_retirement:
             line=dict(color="#E05A2B", width=2, dash="dash"),
             name=f"목표 자산 (SWR {swr}%)",
             hovertemplate="연도: %{x}년<br>목표: %{y:.2f}억원<extra></extra>",
+            legendrank=3,
         )
     )
 
 # ── 은퇴 시나리오 ─────────────────────────────
 if use_retirement:
-    # 은퇴 후 구간만 별도 색으로 표시 (retire_year 시점부터)
-    ret_x = years_range[int(retire_year) :]  # retire_year 포함
-    ret_min_y = to_eok(ret_assets_min)[int(retire_year) :]
-    ret_max_y = to_eok(ret_assets_max)[int(retire_year) :]
-    ret_mid_y = to_eok(ret_assets_mid)[int(retire_year) :]
+    # 은퇴 단계 X축: retire_year ~ retire_year + post_retire_years
+    # ret_assets_*[0] = assets_mid[retire_year] (한 점에서 min/mid/max 분기)
+    ret_x = list(range(int(retire_year), total_horizon + 1))
+    ret_min_y = to_eok(ret_assets_min)
+    ret_max_y = to_eok(ret_assets_max)
+    ret_mid_y = to_eok(ret_assets_mid)
 
     # 은퇴 음영 밴드
     fig.add_trace(
@@ -581,7 +556,8 @@ if use_retirement:
             fillcolor="rgba(34,139,34,0.15)",
             showlegend=True,
             hoverinfo="skip",
-            name=f"은퇴 시나리오 범위 ({min_retire_return}%~{max_retire_return}%)",
+            name=f"은퇴 수익률 범위 ({min_retire_return}%~{max_retire_return}%)",
+            legendrank=4,
         )
     )
     fig.add_trace(
@@ -592,6 +568,7 @@ if use_retirement:
             line=dict(color="#2E8B57", width=1.5, dash="dot"),
             name=f"은퇴 최소 {min_retire_return}%",
             hovertemplate="연도: %{x}년<br>자산(은퇴): %{y:.2f}억원<extra></extra>",
+            showlegend=False,
         )
     )
     fig.add_trace(
@@ -602,6 +579,7 @@ if use_retirement:
             line=dict(color="#2E8B57", width=1.5, dash="dot"),
             name=f"은퇴 최대 {max_retire_return}%",
             hovertemplate="연도: %{x}년<br>자산(은퇴): %{y:.2f}억원<extra></extra>",
+            showlegend=False,
         )
     )
     fig.add_trace(
@@ -613,6 +591,7 @@ if use_retirement:
             line=dict(color="#006400", width=2.5),
             name=f"은퇴 중간 {mid_retire_return:.1f}%",
             hovertemplate="연도: %{x}년<br>자산(은퇴): %{y:.2f}억원<extra></extra>",
+            legendrank=3,
         )
     )
 
@@ -625,7 +604,38 @@ if use_retirement:
         annotation_font=dict(color="#FF8C00", size=12),
     )
 
-    pass
+    # ── 자산 감소 단계 경고 마커 (3개 시나리오 곡선 위에 직접 표기) ──
+    rofs = int(retire_year)
+    WARN_LEVELS = [
+        (retire_start_asset * 0.5, "🟡", "자산 반토막 (-50%)", "#F0AD4E", 5),
+        (retire_start_asset * 0.2, "🟠", "1/5 남음 (-80%)",   "#E0732B", 6),
+        (0,                          "💀", "자산 고갈",         "#D9534F", 7),
+    ]
+    for threshold, emoji, label, color, rank in WARN_LEVELS:
+        xs, ys = [], []
+        for ret_assets in (ret_assets_min, ret_assets_mid, ret_assets_max):
+            yr = find_threshold_year(ret_assets, threshold, rofs)
+            if yr is not None:
+                k = yr - rofs
+                xs.append(yr)
+                ys.append(ret_assets[k] / 10_000)  # 억원
+        if xs:  # 적어도 한 시나리오에서 발생한 경우에만 trace + 범례 추가
+            fig.add_trace(
+                go.Scatter(
+                    x=xs,
+                    y=ys,
+                    mode="markers+text",
+                    # 투명 마커: 차트엔 이모지만 보이고, 범례에선 "Aa" 플레이스홀더 회피용
+                    marker=dict(size=12, color="rgba(0,0,0,0)", line=dict(width=0)),
+                    text=[emoji] * len(xs),
+                    textposition="middle center",
+                    textfont=dict(size=14),
+                    name=f"{emoji} {label}",
+                    hovertemplate=f"<b>{label}</b><br>%{{x}}년차 · %{{y:.2f}}억원<extra></extra>",
+                    showlegend=True,
+                    legendrank=rank,
+                )
+            )
 
 # ── 목표 달성 수직 점선 (은퇴 시나리오 OFF일 때만) ──
 # 은퇴 ON이면 은퇴 시점 수직선만 남기고 목표 자산 선들은 모두 숨김
@@ -682,6 +692,7 @@ fig.update_layout(
         xanchor="right",
         x=1,
         font=dict(size=11),
+        traceorder="normal",
     ),
     height=580,
     plot_bgcolor="white",
@@ -697,78 +708,130 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("📊 시뮬레이션 요약")
 
 
-def render_summary(col, label, assets, tyr, color_tag):
+def render_summary(col, label, final_asset, tyr, achieved_asset, horizon_yr):
+    """원본과 동일한 박스 시각화 (st.metric + success/error)."""
     with col:
         st.markdown(f"**{label}**")
-        st.metric("최종 자산", fmt_eok(assets[-1]))
+        st.metric("최종 자산", fmt_eok(final_asset))
         if tyr is not None:
             st.success(
-                f"🎯 목표 달성: **{tyr}년차**\n\n달성 자산: {fmt_eok(assets[tyr])}"
+                f"🎯 목표 달성: **{tyr}년차**\n\n달성 자산: {fmt_eok(achieved_asset)}"
             )
         else:
-            st.error(f"⏳ {int(sim_years)}년 내 미달성\n\n최종: {fmt_eok(assets[-1])}")
+            st.error(f"⏳ {horizon_yr}년 내 미달성\n\n최종: {fmt_eok(final_asset)}")
 
 
-c1, c2, c3 = st.columns(3)
-render_summary(c1, f"최소 {min_return}%", assets_min, target_yr_min, "min")
-render_summary(c2, f"중간 {mid_return:.1f}%", assets_mid, target_yr_mid, "mid")
-render_summary(c3, f"최대 {max_return}%", assets_max, target_yr_max, "max")
+def _achieved(assets, tyr, offset=0):
+    """tyr(절대 연도) 시점의 자산을 assets 배열에서 찾기. None이면 None 반환."""
+    if tyr is None:
+        return None
+    idx = tyr - offset
+    return assets[idx] if 0 <= idx < len(assets) else None
 
-if use_retirement:
-    st.markdown("##### 🏖️ 은퇴 시나리오")
+
+# streamlit 기본 alert 박스 톤에 가까운 팔레트 (배경 / 테두리 / 텍스트)
+ALERT_PALETTE = {
+    "error":   ("rgba(255, 43, 43, 0.09)", "rgba(255, 43, 43, 0.25)", "#7A0000"),
+    "warning": ("rgba(255, 170, 0, 0.10)", "rgba(255, 170, 0, 0.30)", "#7A4D00"),
+    "success": ("rgba(33, 195, 84, 0.10)", "rgba(33, 195, 84, 0.30)", "#0E5F1F"),
+}
+
+
+def styled_alert(severity, msg_html):
+    """st.error/warning/success 대체 — HTML 줄바꿈 자유롭게 사용 가능."""
+    bg, bd, fg = ALERT_PALETTE[severity]
+    st.markdown(
+        f'<div style="background:{bg}; border:1px solid {bd}; color:{fg}; '
+        f'padding:0.75rem 1rem; border-radius:0.5rem; line-height:1.7; '
+        f'font-size:0.9rem; margin:0.25rem 0;">{msg_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_retire_card(col, label, ret_assets, retire_start, retire_yr):
+    """은퇴 시나리오 요약 카드 — 최종 자산 + 자산 감소 단계별 경고 시점."""
+    with col:
+        st.markdown(f"**{label}**")
+        st.metric("최종 자산", fmt_eok(ret_assets[-1]))
+
+        yr50 = find_threshold_year(ret_assets, retire_start * 0.5, retire_yr)
+        yr20 = find_threshold_year(ret_assets, retire_start * 0.2, retire_yr)
+        yr0 = find_threshold_year(ret_assets, 0, retire_yr)
+
+        lines = []
+        if yr50 is not None:
+            lines.append(f"🟡 자산 반토막: <b>{yr50}년차</b>")
+        if yr20 is not None:
+            lines.append(f"🟠 1/5 남음: <b>{yr20}년차</b>")
+        if yr0 is not None:
+            lines.append(f"💀 자산 고갈: <b>{yr0}년차</b>")
+
+        msg_html = "<br>".join(lines)
+        if yr0 is not None:
+            styled_alert("error", msg_html)
+        elif lines:
+            styled_alert("warning", msg_html)
+        else:
+            styled_alert("success", "✅ 안전 — 자산 유지/증가")
+
+
+if not use_retirement:
+    c1, c2, c3 = st.columns(3)
+    render_summary(
+        c1, f"최소 {min_return}%",
+        assets_min[-1], target_yr_min, _achieved(assets_min, target_yr_min), total_horizon,
+    )
+    render_summary(
+        c2, f"중간 {mid_return:.1f}%",
+        assets_mid[-1], target_yr_mid, _achieved(assets_mid, target_yr_mid), total_horizon,
+    )
+    render_summary(
+        c3, f"최대 {max_return}%",
+        assets_max[-1], target_yr_max, _achieved(assets_max, target_yr_max), total_horizon,
+    )
+else:
+    st.markdown(
+        f"##### 🏖️ 은퇴 후 {int(post_retire_years)}년 시점 자산 "
+        f"(은퇴 시작 자산: {fmt_eok(retire_start_asset)})"
+    )
     r1, r2, r3 = st.columns(3)
-    render_summary(
-        r1, f"은퇴 최소 {min_retire_return}%", ret_assets_min, ret_target_yr_min, "min"
-    )
-    render_summary(
-        r2,
-        f"은퇴 중간 {mid_retire_return:.1f}%",
-        ret_assets_mid,
-        ret_target_yr_mid,
-        "mid",
-    )
-    render_summary(
-        r3, f"은퇴 최대 {max_retire_return}%", ret_assets_max, ret_target_yr_max, "max"
-    )
+    rofs = int(retire_year)
+    render_retire_card(r1, f"은퇴 최소 {min_retire_return}%", ret_assets_min, retire_start_asset, rofs)
+    render_retire_card(r2, f"은퇴 중간 {mid_retire_return:.1f}%", ret_assets_mid, retire_start_asset, rofs)
+    render_retire_card(r3, f"은퇴 최대 {max_retire_return}%", ret_assets_max, retire_start_asset, rofs)
 
 # ─────────────────────────────────────────────
 # 연도별 상세 표
 # ─────────────────────────────────────────────
 st.subheader("📅 연도별 상세 내역")
 
+DASH = "—"
+
+# ── 자산 시나리오 상세 표 (항상 표시, 0 ~ base_horizon) ──
 col_min = f"자산({min_return}%)"
 col_mid = f"자산({mid_return:.1f}%)"
 col_max = f"자산({max_return}%)"
-col_ret_min = f"은퇴자산({min_retire_return}%)"
-col_ret_mid = f"은퇴자산({mid_retire_return:.1f}%)"
-col_ret_max = f"은퇴자산({max_retire_return}%)"
 
-with st.expander("상세 내역 펼치기"):
+with st.expander("💼 자산 시나리오 상세 내역 펼치기"):
     rows = []
-    for yr in years_range:
+    for yr in range(base_horizon + 1):
         if yr == 0:
             m_exp = float(monthly_expenses)
             annual_exp = m_exp * 12
             cur_inc = float(monthly_income)
             reinvest = (cur_inc - m_exp) * 12
-            ret_min_r = initial_assets * (min_return / 100)
-            ret_mid_r = initial_assets * (mid_return / 100)
-            ret_max_r = initial_assets * (max_return / 100)
-            gross_w = 0.0
-            tax_p = 0.0
-            is_ret = False
+            yr_ret_min = initial_assets * (min_return / 100)
+            yr_ret_mid = initial_assets * (mid_return / 100)
+            yr_ret_max = initial_assets * (max_return / 100)
         else:
-            d = details_min[yr - 1]
+            d = details_mid[yr - 1]
             m_exp = d["monthly_exp"]
             annual_exp = d["annual_exp"]
             reinvest = d["annual_savings"]
             cur_inc = d["cur_income"]
-            ret_min_r = details_min[yr - 1]["annual_return"]
-            ret_mid_r = details_mid[yr - 1]["annual_return"]
-            ret_max_r = details_max[yr - 1]["annual_return"]
-            gross_w = 0.0
-            tax_p = 0.0
-            is_ret = False
+            yr_ret_min = details_min[yr - 1]["annual_return"]
+            yr_ret_mid = details_mid[yr - 1]["annual_return"]
+            yr_ret_max = details_max[yr - 1]["annual_return"]
 
         row = {
             "연도": f"{yr}년차",
@@ -776,44 +839,66 @@ with st.expander("상세 내역 펼치기"):
             "월 소비 (만원)": fmt_man(m_exp),
             "연 소비 (만원)": fmt_man(annual_exp),
             "재투자 (만원)": fmt_man(reinvest),
-            f"연수익({min_return}%)": fmt_man(ret_min_r),
-            f"연수익({mid_return:.1f}%)": fmt_man(ret_mid_r),
-            f"연수익({max_return}%)": fmt_man(ret_max_r),
+            f"연수익({min_return}%)": fmt_man(yr_ret_min),
+            f"연수익({mid_return:.1f}%)": fmt_man(yr_ret_mid),
+            f"연수익({max_return}%)": fmt_man(yr_ret_max),
             col_min: fmt_eok(assets_min[yr]),
             col_mid: fmt_eok(assets_mid[yr]),
             col_max: fmt_eok(assets_max[yr]),
-            f"목표 자산 (SWR {swr}%)": fmt_eok(targets[yr]),
         }
-
-        # 은퇴 시나리오 컬럼 추가
-        if use_retirement:
-            if yr == 0:
-                ret_d = {
-                    "cur_income": monthly_income,
-                    "is_retired": False,
-                    "gross_withdraw": 0.0,
-                    "tax_paid": 0.0,
-                    "annual_return": initial_assets * (mid_return / 100),
-                }
-            else:
-                ret_d = ret_details_mid[yr - 1]
-
-            row["은퇴여부"] = "🏖️" if ret_d["is_retired"] else ""
-            row["은퇴 후 수입 (만원)"] = fmt_man(ret_d["cur_income"])
-            row["총 인출 (만원)"] = fmt_man(ret_d["gross_withdraw"])
-            row["세금 (만원)"] = fmt_man(ret_d["tax_paid"])
-            row[col_ret_min] = fmt_eok(ret_assets_min[yr])
-            row[col_ret_mid] = fmt_eok(ret_assets_mid[yr])
-            row[col_ret_max] = fmt_eok(ret_assets_max[yr])
-
+        if not use_retirement:
+            row[f"목표 자산 (SWR {swr}%)"] = fmt_eok(targets[yr])
         rows.append(row)
 
-    df = pd.DataFrame(rows)
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    df_basic = pd.DataFrame(rows)
+    st.dataframe(df_basic, hide_index=True, use_container_width=True)
 
-# ─────────────────────────────────────────────
-# 계산 가정 안내
-# ─────────────────────
+# ── 은퇴 시나리오 상세 표 (토글 ON일 때만, retire_year ~ total_horizon) ──
+if use_retirement:
+    col_ret_min = f"은퇴자산({min_retire_return}%)"
+    col_ret_mid = f"은퇴자산({mid_retire_return:.1f}%)"
+    col_ret_max = f"은퇴자산({max_retire_return}%)"
+
+    with st.expander("🏖️ 은퇴 시나리오 상세 내역 펼치기"):
+        rows = []
+        for yr in range(int(retire_year), total_horizon + 1):
+            k = yr - int(retire_year)
+            if k == 0:
+                # 시작점 — 자산 시나리오 mid 곡선이 도달한 한 점에서 분기
+                row = {
+                    "연도": f"{yr}년차 (시작)",
+                    "월 수입 (만원)": DASH,
+                    "월 소비 (만원)": DASH,
+                    "연 소비 (만원)": DASH,
+                    "예상 세금 (만원)": DASH,
+                    f"연수익({min_retire_return}%)": DASH,
+                    f"연수익({mid_retire_return:.1f}%)": DASH,
+                    f"연수익({max_retire_return}%)": DASH,
+                    col_ret_min: fmt_eok(retire_start_asset),
+                    col_ret_mid: fmt_eok(retire_start_asset),
+                    col_ret_max: fmt_eok(retire_start_asset),
+                    "총 인출 (만원)": DASH,
+                }
+            else:
+                rd = ret_details_mid[k - 1]
+                row = {
+                    "연도": f"{yr}년차",
+                    "월 수입 (만원)": fmt_man(rd["cur_income"]),
+                    "월 소비 (만원)": fmt_man(rd["monthly_exp"]),
+                    "연 소비 (만원)": fmt_man(rd["annual_exp"]),
+                    "예상 세금 (만원)": fmt_man(rd["tax_paid"]),
+                    f"연수익({min_retire_return}%)": fmt_man(ret_details_min[k - 1]["annual_return"]),
+                    f"연수익({mid_retire_return:.1f}%)": fmt_man(ret_details_mid[k - 1]["annual_return"]),
+                    f"연수익({max_retire_return}%)": fmt_man(ret_details_max[k - 1]["annual_return"]),
+                    col_ret_min: fmt_eok(ret_assets_min[k]),
+                    col_ret_mid: fmt_eok(ret_assets_mid[k]),
+                    col_ret_max: fmt_eok(ret_assets_max[k]),
+                    "총 인출 (만원)": fmt_man(rd["gross_withdraw"]),
+                }
+            rows.append(row)
+
+        df_retire = pd.DataFrame(rows)
+        st.dataframe(df_retire, hide_index=True, use_container_width=True)
 
 # ─────────────────────────────────────────────
 # 계산 가정 안내
