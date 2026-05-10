@@ -707,18 +707,27 @@ else:
     )
 
     # 핵심 연도별 확률 표 — 셀에 "2σ / 1.2σ" 형태로 동시 표기
-    snapshot_years = sorted({rofs + n for n in (5, 10, 15, 20, 25, 30)} | {total_horizon})
+    # 5년 단위 + 마지막 연도 포함. 모든 컬럼 0%인 행은 의미 없으므로 스킵.
+    snapshot_years = sorted(set(range(rofs + 5, total_horizon + 1, 5)) | {total_horizon})
     snapshot_years = [y for y in snapshot_years if rofs < y <= total_horizon]
     prob_rows = []
     for yr in snapshot_years:
         idx = yr - rofs
+        if not any(
+            probs_2s[label]["probs"][idx] > 0 or probs_12[label]["probs"][idx] > 0
+            for label in PROB_THRESHOLDS
+        ):
+            continue  # 모든 임계값에서 확률 0 → 의미 없는 행
         row = {"연도": f"{yr}년차 (은퇴 +{yr - rofs}년)"}
         for label in PROB_THRESHOLDS:
             p2 = probs_2s[label]["probs"][idx] * 100
             p12 = probs_12[label]["probs"][idx] * 100
             row[f"{label} (2σ/1.2σ)"] = f"{p2:.1f}% / {p12:.1f}%"
         prob_rows.append(row)
-    st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
+    if prob_rows:
+        st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
+    else:
+        st.success("✅ 시뮬레이션 전 구간에서 임계값 도달 확률 0% — 매우 안전한 시나리오")
 
     # 누적 도달 확률 곡선 차트 — 6개 라인 (3 임계값 × 2 σ 가정)
     # 색 = 임계값, 라인 스타일 = σ 가정 (2σ: solid / 1.2σ: dot)
