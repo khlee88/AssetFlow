@@ -137,6 +137,82 @@ def find_threshold_year(ret_assets, threshold, retire_yr):
     return None
 
 
+def monte_carlo_post_retirement(
+    start_assets,
+    m_exp_init,
+    mu_pct,
+    sigma_pct,
+    inflation_pct,
+    retire_yr,
+    post_years,
+    m_income_post,
+    tax_pct,
+    n_trials=10_000,
+    seed=42,
+):
+    """은퇴 단계 Monte Carlo 시뮬레이션 — 매년 수익률 ~ N(mu, sigma²).
+
+    μ, σ의 결정은 caller 책임 (예: min/max를 어느 신뢰구간으로 해석할지).
+    인출/세금 로직은 simulate_post_retirement와 동일하지만 벡터화로 처리.
+
+    반환:
+      asset_paths — shape (n_trials, post_years+1) 자산 경로 배열.
+                    asset_paths[:, 0] = start_assets (모든 trial 동일).
+    """
+    rng = np.random.default_rng(seed)
+    inf = inflation_pct / 100
+    tax = tax_pct / 100
+    mu = mu_pct / 100
+    sigma = sigma_pct / 100
+
+    annual_returns = rng.normal(mu, sigma, size=(n_trials, post_years))
+
+    asset_paths = np.zeros((n_trials, post_years + 1))
+    asset_paths[:, 0] = start_assets
+
+    for k in range(1, post_years + 1):
+        absolute_yr = retire_yr + k
+        cur_monthly_exp = m_exp_init * ((1 + inf) ** absolute_yr)
+        deficit = cur_monthly_exp - m_income_post
+
+        # 인출/저축은 스칼라 (모든 trial 동일)
+        if deficit > 0 and tax < 1:
+            annual_savings = -(deficit / (1 - tax)) * 12
+        else:
+            annual_savings = (m_income_post - cur_monthly_exp) * 12
+
+        prev = asset_paths[:, k - 1]
+        annual_return = prev * annual_returns[:, k - 1]
+        asset_paths[:, k] = prev + annual_return + annual_savings
+
+    return asset_paths
+
+
+def compute_threshold_probabilities(asset_paths, thresholds, retire_yr):
+    """각 임계값에 대해 연도별 누적 도달 확률 계산.
+
+    "누적"의 의미: trial이 (retire_yr+k) 시점까지 한 번이라도 임계값 이하로
+    떨어진 적이 있으면 그 trial은 도달한 것으로 간주.
+
+    Args:
+      asset_paths — shape (n_trials, post_years+1)
+      thresholds — dict {label: threshold_value}
+      retire_yr — 은퇴 시작 절대 연도
+
+    Returns:
+      dict {label: {"years": [...], "probs": [...]}} — 절대 연도 + 비율 (0~1)
+    """
+    n_trials, n_years_plus_1 = asset_paths.shape
+    result = {}
+    for label, threshold in thresholds.items():
+        below = asset_paths <= threshold
+        ever_below = np.cumsum(below, axis=1) > 0  # 한 번이라도 도달했으면 이후 True
+        probs = ever_below.mean(axis=0).tolist()
+        years = list(range(retire_yr, retire_yr + n_years_plus_1))
+        result[label] = {"years": years, "probs": probs}
+    return result
+
+
 def fmt_man(val):
     if not np.isfinite(val):
         return "∞"

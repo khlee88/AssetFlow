@@ -4,10 +4,12 @@ import streamlit as st
 
 from simulation import (
     calc_target_assets,
+    compute_threshold_probabilities,
     find_target_year,
     find_threshold_year,
     fmt_eok,
     fmt_man,
+    monte_carlo_post_retirement,
     simulate,
     simulate_post_retirement,
 )
@@ -371,19 +373,20 @@ fig.add_trace(
     )
 )
 
-# 목표 자산 라인 (은퇴 시나리오 OFF일 때만 표시)
-if not use_retirement:
-    fig.add_trace(
-        go.Scatter(
-            x=years_range,
-            y=to_eok(targets),
-            mode="lines",
-            line=dict(color="#E05A2B", width=2, dash="dash"),
-            name=f"목표 자산 (SWR {swr}%)",
-            hovertemplate="연도: %{x}년<br>목표: %{y:.2f}억원<extra></extra>",
-            legendrank=3,
-        )
+# 목표 자산 라인 (SWR 기준) — 항상 표시
+# 은퇴 ON에서도 표시: 인플레이션으로 매년 상승하는 "지속 가능 인출 기준선" 시각화.
+# 자산 곡선이 이 라인 아래로 떨어지면 SWR 기반 안정 인출이 깨진 상태.
+fig.add_trace(
+    go.Scatter(
+        x=years_range,
+        y=to_eok(targets),
+        mode="lines",
+        line=dict(color="#E05A2B", width=2, dash="dash"),
+        name=f"목표 자산 (SWR {swr}%)",
+        hovertemplate="연도: %{x}년<br>목표: %{y:.2f}억원<extra></extra>",
+        legendrank=5,
     )
+)
 
 # ── 은퇴 시나리오 ─────────────────────────────
 if use_retirement:
@@ -467,9 +470,9 @@ if use_retirement:
     # ── 자산 감소 단계 경고 마커 (3개 시나리오 곡선 위에 직접 표기) ──
     rofs = int(retire_year)
     WARN_LEVELS = [
-        (retire_start_asset * 0.5, "🟡", "자산 반토막 (-50%)", "#F0AD4E", 5),
-        (retire_start_asset * 0.2, "🟠", "1/5 남음 (-80%)",   "#E0732B", 6),
-        (0,                          "💀", "자산 고갈",         "#D9534F", 7),
+        (retire_start_asset * 0.5, "🟡", "자산 반토막 (-50%)", "#F0AD4E", 6),
+        (retire_start_asset * 0.2, "🟠", "1/5 남음 (-80%)",   "#E0732B", 7),
+        (0,                          "💀", "자산 고갈",         "#D9534F", 8),
     ]
     for threshold, emoji, label, color, rank in WARN_LEVELS:
         xs, ys = [], []
@@ -659,6 +662,103 @@ else:
     render_retire_card(r1, f"은퇴 최소 {min_retire_return}%", ret_assets_min, retire_start_asset, rofs)
     render_retire_card(r2, f"은퇴 중간 {mid_retire_return:.1f}%", ret_assets_mid, retire_start_asset, rofs)
     render_retire_card(r3, f"은퇴 최대 {max_retire_return}%", ret_assets_max, retire_start_asset, rofs)
+
+    # ── 📊 확률 분석 (Monte Carlo, 두 신뢰구간 비교) ────────────────
+    PROB_THRESHOLDS = {
+        "🟡 자산 반토막 (-50%)": retire_start_asset * 0.5,
+        "🟠 1/5 남음 (-80%)": retire_start_asset * 0.2,
+        "💀 자산 고갈": 0,
+    }
+    PROB_COLORS = {
+        "🟡 자산 반토막 (-50%)": "#F0AD4E",
+        "🟠 1/5 남음 (-80%)": "#E0732B",
+        "💀 자산 고갈": "#D9534F",
+    }
+
+    # μ는 동일, σ만 다름 (입력 범위를 ±2σ vs ±1.2σ로 해석)
+    mc_mu = (min_retire_return + max_retire_return) / 2
+    mc_sigma_2s = (max_retire_return - min_retire_return) / 4    # ±2σ → 95.4% CI
+    mc_sigma_12 = (max_retire_return - min_retire_return) / 2.4  # ±1.2σ → ~77% CI
+
+    mc_kwargs = dict(
+        start_assets=retire_start_asset,
+        m_exp_init=monthly_expenses,
+        mu_pct=mc_mu,
+        inflation_pct=inflation_rate,
+        retire_yr=rofs,
+        post_years=int(post_retire_years),
+        m_income_post=retire_income,
+        tax_pct=retire_tax_pct,
+        n_trials=10_000,
+    )
+    paths_2s = monte_carlo_post_retirement(sigma_pct=mc_sigma_2s, **mc_kwargs)
+    paths_12 = monte_carlo_post_retirement(sigma_pct=mc_sigma_12, **mc_kwargs)
+    probs_2s = compute_threshold_probabilities(paths_2s, PROB_THRESHOLDS, rofs)
+    probs_12 = compute_threshold_probabilities(paths_12, PROB_THRESHOLDS, rofs)
+
+    st.markdown("##### 📊 확률 분석 (Monte Carlo, 정규분포 ± 두 신뢰구간 가정)")
+    st.caption(
+        f"동일한 정규분포(μ={mc_mu:.1f}%) 위에서 σ만 다른 두 가정 비교 (참고용):  \n"
+        f"• **2σ 가정** (σ={mc_sigma_2s:.2f}%) — 입력 범위를 **95.4% 신뢰구간**(±2σ)으로 해석. "
+        f"표준 시나리오 (약 5%만 범위 밖)  \n"
+        f"• **1.2σ 가정** (σ={mc_sigma_12:.2f}%) — 입력 범위를 **약 77% 신뢰구간**(±1.2σ)으로 해석. "
+        f"불확실성 더 크게 본 스트레스 시나리오 (약 23%가 범위 밖)  \n"
+        f"⚠️ σ에 따른 확률 변화는 임계값 위치에 따라 방향이 다를 수 있음 — 두 값을 모두 참고."
+    )
+
+    # 핵심 연도별 확률 표 — 셀에 "2σ / 1.2σ" 형태로 동시 표기
+    snapshot_years = sorted({rofs + n for n in (5, 10, 15, 20, 25, 30)} | {total_horizon})
+    snapshot_years = [y for y in snapshot_years if rofs < y <= total_horizon]
+    prob_rows = []
+    for yr in snapshot_years:
+        idx = yr - rofs
+        row = {"연도": f"{yr}년차 (은퇴 +{yr - rofs}년)"}
+        for label in PROB_THRESHOLDS:
+            p2 = probs_2s[label]["probs"][idx] * 100
+            p12 = probs_12[label]["probs"][idx] * 100
+            row[f"{label} (2σ/1.2σ)"] = f"{p2:.1f}% / {p12:.1f}%"
+        prob_rows.append(row)
+    st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
+
+    # 누적 도달 확률 곡선 차트 — 6개 라인 (3 임계값 × 2 σ 가정)
+    # 색 = 임계값, 라인 스타일 = σ 가정 (2σ: solid / 1.2σ: dot)
+    fig_prob = go.Figure()
+    for label, color in PROB_COLORS.items():
+        fig_prob.add_trace(
+            go.Scatter(
+                x=probs_2s[label]["years"],
+                y=[p * 100 for p in probs_2s[label]["probs"]],
+                mode="lines",
+                line=dict(color=color, width=2.5),
+                name=f"{label} · 2σ",
+                hovertemplate=f"{label} (2σ)<br>%{{x}}년차: %{{y:.1f}}%<extra></extra>",
+            )
+        )
+        fig_prob.add_trace(
+            go.Scatter(
+                x=probs_12[label]["years"],
+                y=[p * 100 for p in probs_12[label]["probs"]],
+                mode="lines",
+                line=dict(color=color, width=2, dash="dot"),
+                name=f"{label} · 1.2σ",
+                hovertemplate=f"{label} (1.2σ)<br>%{{x}}년차: %{{y:.1f}}%<extra></extra>",
+            )
+        )
+    fig_prob.update_layout(
+        title=dict(text="누적 도달 확률 곡선 (실선: 2σ 가정 / 점선: 1.2σ 가정)", font=dict(size=14)),
+        xaxis=dict(title="연도", gridcolor="#ECECEC", zeroline=False),
+        yaxis=dict(title="확률 (%)", range=[0, 100], gridcolor="#ECECEC", zeroline=False),
+        hovermode="x unified",
+        height=380,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(t=60, b=40),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            xanchor="right", x=1, font=dict(size=10),
+        ),
+    )
+    st.plotly_chart(fig_prob, use_container_width=True)
 
 # ─────────────────────────────────────────────
 # 연도별 상세 표
