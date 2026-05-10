@@ -123,7 +123,7 @@ def calc_target_assets(m_exp_init, inflation_pct, swr_pct, years):
 
 
 def find_target_year(assets, targets):
-    for i, (a, t) in enumerate(zip(assets, targets)):
+    for i, (a, t) in enumerate(zip(assets, targets, strict=False)):
         if a >= t:
             return i
     return None

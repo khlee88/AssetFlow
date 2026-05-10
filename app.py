@@ -469,12 +469,13 @@ if use_retirement:
 
     # ── 자산 감소 단계 경고 마커 (3개 시나리오 곡선 위에 직접 표기) ──
     rofs = int(retire_year)
+    # 색상은 마커가 투명이라 차트엔 안 쓰임. PROB_COLORS에 별도 정의 (확률 분석 차트용).
     WARN_LEVELS = [
-        (retire_start_asset * 0.5, "🟡", "자산 반토막 (-50%)", "#F0AD4E", 6),
-        (retire_start_asset * 0.2, "🟠", "1/5 남음 (-80%)",   "#E0732B", 7),
-        (0,                          "💀", "자산 고갈",         "#D9534F", 8),
+        (retire_start_asset * 0.5, "🟡", "자산 반토막 (-50%)", 6),
+        (retire_start_asset * 0.2, "🟠", "1/5 남음 (-80%)",   7),
+        (0,                          "💀", "자산 고갈",         8),
     ]
-    for threshold, emoji, label, color, rank in WARN_LEVELS:
+    for threshold, emoji, label, rank in WARN_LEVELS:
         xs, ys = [], []
         for ret_assets in (ret_assets_min, ret_assets_mid, ret_assets_max):
             yr = find_threshold_year(ret_assets, threshold, rofs)
@@ -584,12 +585,11 @@ def render_summary(col, label, final_asset, tyr, achieved_asset, horizon_yr):
             st.error(f"⏳ {horizon_yr}년 내 미달성\n\n최종: {fmt_eok(final_asset)}")
 
 
-def _achieved(assets, tyr, offset=0):
-    """tyr(절대 연도) 시점의 자산을 assets 배열에서 찾기. None이면 None 반환."""
-    if tyr is None:
+def _achieved(assets, tyr):
+    """tyr 시점의 자산값. tyr가 None이거나 범위 밖이면 None."""
+    if tyr is None or not 0 <= tyr < len(assets):
         return None
-    idx = tyr - offset
-    return assets[idx] if 0 <= idx < len(assets) else None
+    return assets[tyr]
 
 
 # streamlit 기본 alert 박스 톤에 가까운 팔레트 (배경 / 테두리 / 텍스트)
